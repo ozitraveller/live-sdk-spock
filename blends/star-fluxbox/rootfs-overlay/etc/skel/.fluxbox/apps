@@ -1,0 +1,28 @@
+# xprop | grep -i 'class'
+# Launch the app first, run the command above, then when the cursor turns to '+' touch the app
+
+[app] (name=x-file-manager) (class=x-file-manager)
+  [Dimensions]	{60% 69%}
+  [Position]	(CENTER)	{0 0}
+  [Deco]	{0x66f}
+  [Minimized]	{no}
+  [Maximized]	{no}
+  [Fullscreen]	{no}
+  [Layer]	{8}
+  [Alpha]	{255}
+[end]
+[app] (name=x-terminal-emulator) (class=x-terminal-emulator)
+  [Dimensions]	{60% 69%}
+  [Position]	(UPPERLEFT)	{8% 15%}
+  [Layer]	{8}
+[end]
+[app] (name=win) (class=Xpdf)
+  [Dimensions]	{60% 69%}
+  [Position]	(CENTER)	{20 20}
+  [Deco]	{0x66f}
+  [Minimized]	{no}
+  [Maximized]	{no}
+  [Fullscreen]	{no}
+  [Layer]	{8}
+  [Alpha]	{255}
+[end]

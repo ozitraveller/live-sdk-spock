@@ -1,0 +1,8 @@
+PRETTY_NAME="DIY GNU/Linux REPLACEME (release_name)"
+NAME="DIY GNU/Linux"
+VERSION_ID="REPLACEME"
+VERSION="REPLACEME (release_name)"
+ID=star
+ID_LIKE=devuan
+ANSI_COLOR="1;34"
+HOME_URL="https://sourceforge.net/projects/linnix/"
