@@ -243,7 +243,9 @@ load() {
 
 	workdir="$R/tmp/${os}-${arch}-build"
 	strapdir="$workdir/bootstrap"
-	
+
+	make_isohybrid="yes"
+		
 	custom_deb_packages=$blendlib/custom-pkgs/$release
 	squashfs_backups=$R/backups
 

@@ -38,82 +38,92 @@ EOF
 	chroot-script -d isoprep    || zerr
 }
 
-iso_setup_isolinux() {
-	fn iso_setup_isolinux
-	req=(workdir strapdir release arch url_pkg)
+iso_setup_kernel() {
+	fn iso_setup_kernel
+	req=(workdir strapdir)
 	ckreq || return 1
-
-	notice "setting up isolinux"
 
 	mkdir -p $workdir/binary/{live,isolinux}
 	act "copying kernel and initrd"
 	cp $strapdir/boot/vmlinuz* $workdir/binary/live/vmlinuz
 	cp $strapdir/boot/initrd*  $workdir/binary/live/initrd.img
-	#cp $strapdir/boot/memtest86+.bin $workdir/binary/live/memtest	
-	
-	rm -rf $workdir/syslinux
-	mkdir -p $workdir/syslinux
-	pushd $workdir/syslinux
-	wget $url_pkg/dists/$release/main/binary-$arch/Packages.gz
-	rm -f Packages
-	gzip -d Packages.gz
-	
-	line=`grep "^Filename:" Packages | grep "syslinux_"`
-	
-	line=${line##*/}
-	line=${line%%-*}
-	
-	wget $url_pkg/dists/$release/main/source/Sources.gz
-	rm -f Sources
-	gzip -d Sources.gz
-	
-	if grep "syslinux_" Sources | grep ".orig.tar.gz"
-	then
-	    line=`grep "syslinux_" Sources | grep ".orig.tar.g z"`
-	elif  grep "syslinux_" Sources | grep ".orig.tar.xz"
-	then
-	    line=`grep "syslinux_" Sources | grep ".orig.tar.xz"`
-	fi
-		
-	wget http://deb.debian.org/debian/pool/main/s/syslinux/syslinux_${line##*_}	
-	if [ ${line##*.} = "xz" ]; then
-		tar -Jxvf "syslinux_${line##*_}"
-	elif [ ${line##*.} = "gz" ]; then
-		tar -xzvf "syslinux_${line##*_}"
-	fi
+	#cp $strapdir/boot/memtest86+.bin $workdir/binary/live/memtest
+}
 
-	notice "building syslinux"
-	pushd syslinux-*
-	make
-	popd && popd
+iso_syslinux() {
+	fn iso_syslinux
+	req=(workdir)
+	ckreq || return 1
 	
-	case $arch in
-		i386)   bits="32"      ;;
-		amd64)  bits="64"      ;;
-	esac
+	cat <<EOF | sudo tee $workdir/env/download_syslinux
+#!/bin/sh
+rm -rf /home/syslinux 
+mkdir -p /home/syslinux
+cd /home/syslinux
+apt-get update
+apt-get source syslinux
+EOF
+
+	chroot-script -d download_syslinux $workdir/env || zerr
+
+	local version=$(find $workdir/env/home/syslinux -name "version")
+	sources=${version%/*}
+	sources=${sources##*/}
 	
-	case $bits in
-		"32")  efiboot="bootia32.efi"     ;;
-		"64")  efiboot="bootix32.efi"     ;;
-	esac
-		
-	cp -rav $workdir/syslinux/syslinux-*/bios/core/isolinux.bin                  $workdir/binary/isolinux/
-	cp -rav $workdir/syslinux/syslinux-*/bios/com32/chain/chain.c32              $workdir/binary/isolinux/
-	cp -rav $workdir/syslinux/syslinux-*/bios/com32/elflink/ldlinux/ldlinux.c32  $workdir/binary/isolinux/
-	cp -rav $workdir/syslinux/syslinux-*/bios/com32/lib/libcom32.c32             $workdir/binary/isolinux/	
-	cp -rav $workdir/syslinux/syslinux-*/bios/com32/libutil/libutil.c32          $workdir/binary/isolinux/
-	cp -rav $workdir/syslinux/syslinux-*/bios/com32/menu/vesamenu.c32            $workdir/binary/isolinux/
+	notice "Building syslinux"	
+	# source $R/extra/syslinux_builddeps
+	
+	cat <<EOF | sudo tee $workdir/env/build_syslinux
+#!/bin/bash
+var=\`sed '/^#/d' /home/syslinux/${sources}/debian/control\`
+var=\`echo \$var | awk -F"Build-Depends:" '{print \$2}'\`
+echo \$var > temp
+sed -i "s/[A-Z]/@/g" temp
+x=\`cat temp\`
+tmp=\${x%%@*}
+x=\${tmp%%,*}
+echo \${x%%" "*} > deps
+tmp=\${tmp#*,}
+while [[ \$tmp != " " ]]; do
+	x=\${tmp%%,*}
+	x=\${x#*" "}
+	echo \${x%%" "*}  >> deps
+	tmp=\${tmp#*,}
+done
+allpkgs="\$(apt-cache search '.' | cut -d' ' -f1)"
+list=()
+for i in \$(cat deps) ; do
+	for j in \`printf "%s" "\$allpkgs" | grep "^\$i$"\`; do
+		list+=" \$j"
+	done
+done
+echo \$list
+cd /home/syslinux/${sources}
+apt-get update
+apt-get --yes --force-yes install \$list
+make bios
+EOF
+
+	chroot-script -d build_syslinux $workdir/env || zerr
+	
+	mkdir -p $workdir/binary/isolinux	
+	
+	cp -rav $workdir/env/home/syslinux/$sources/bios/core/isolinux.bin                  $workdir/binary/isolinux/
+	cp -rav $workdir/env/home/syslinux/$sources/bios/com32/chain/chain.c32              $workdir/binary/isolinux/
+	cp -rav $workdir/env/home/syslinux/$sources/bios/com32/elflink/ldlinux/ldlinux.c32  $workdir/binary/isolinux/
+	cp -rav $workdir/env/home/syslinux/$sources/bios/com32/lib/libcom32.c32             $workdir/binary/isolinux/	
+	cp -rav $workdir/env/home/syslinux/$sources/bios/com32/libutil/libutil.c32          $workdir/binary/isolinux/
+	cp -rav $workdir/env/home/syslinux/$sources/bios/com32/menu/vesamenu.c32            $workdir/binary/isolinux/
 }
 
 iso_write_isolinux_cfg() {
 	fn iso_write_isolinux_cfg "(override)"
-	req=(workdir)
+	req=(R workdir os)
 	ckreq || return 1
 	
-	## overridden in blends
-	
-	#distrib=`echo "${blend_distribution}" | sed 's/^./\u&/'`		
-	#sed -i "s/${distrib} Live/${blend_distribution} ${version%%.*} ${label} ${kernel_flavor}/g" $workdir/binary/isolinux/menu.cfg
+	notice "copying isolinux overlay"
+	cp -rav $R/extra/isolinux-overlay/*.cfg $workdir/binary/isolinux/
+	cp -rav $R/extra/isolinux-overlay/splash.png $workdir/binary/isolinux/
 }
 
 iso_squash_strap() {
@@ -136,11 +146,12 @@ iso_squash_strap() {
 	esac
 	pushd $workdir
 	[[ -f binary/live/filesystem.squashfs ]] && rm -f binary/live/filesystem.squashfs
-	sudo mksquashfs $strapdir binary/live/filesystem.squashfs \
-		-no-recovery -always-use-fragments -b 1048576 -comp xz ${=_compfilt} -Xdict-size 75% || zerr
-
+	rm -f $strapdir/root/.bash_history
 	#~ sudo mksquashfs $strapdir binary/live/filesystem.squashfs \
-		#~ -comp xz ${=_compfilt} -noappend || zerr
+		#~ -no-recovery -always-use-fragments -b 1048576 -comp xz ${=_compfilt} -Xdict-size 75% || zerr
+
+	sudo mksquashfs $strapdir binary/live/filesystem.squashfs \
+		-comp xz ${=_compfilt} -noappend || zerr
 		
 
 	popd
@@ -148,7 +159,7 @@ iso_squash_strap() {
 
 iso_xorriso_build() {
 	fn iso_xorriso_build
-	req=(workdir image_name release_name)
+	req=(workdir arch earch blendlib version release make_isohybrid image_name release_name)
 	ckreq || return 1
 
 	notice "building iso..."
@@ -167,41 +178,63 @@ iso_xorriso_build() {
 	image_name="${blend_distribution}-${version}-${release_name}_${date_stamp}-${label}_${earch}"
 	echo "image_name: "${image_name}
 
-	[[ -n "$mkefi" ]] && {
-	uefi_opt="-eltorito-alt-boot -e boot/grub/efiboot.img -isohybrid-gpt-basdat -no-emul-boot"
-	}
+	#~ [[ -n "$mkefi" ]] && {
+	#~ uefi_opt="-eltorito-alt-boot -e boot/grub/efiboot.img -isohybrid-gpt-basdat -no-emul-boot"
+	#~ }
 
 	## this is a hack
-	isohybrid=/usr/lib/ISOLINUX/isohdpfx.bin #"$R"/extra/syslinux/isohdpfx.bin
+	# isohybrid=/usr/lib/ISOLINUX/isohdpfx.bin #"$R"/extra/syslinux/isohdpfx.bin
+	isohybrid="$R"/extra/syslinux/isohdpfx.bin
 
 	mkdir -p $R/dist
 	pushd $workdir
 	
-	sudo xorriso -as mkisofs -r -J -joliet-long -l \
+	[[ -f $workdir/binary/md5sums ]] && rm -f $workdir/binary/md5sums
+	
+	chmod -R 777 $workdir/binary
+	pushd $workdir/binary	
+	find . -xdev -type f -print0 | xargs -0 md5sum > md5sums
+	popd
+	
+	# If isohdpfx.bin gets moved again, maybe use:   isohdpfx=$(find /usr/lib/ -name isohdpfx.bin)
+    [[ $make_isohybrid = yes ]] && {
+       if [[ -f /usr/lib/syslinux/mbr/isohdpfx.bin ]] ; then
+          isohybrid=/usr/lib/syslinux/mbr/isohdpfx.bin
+       elif [[ -f /usr/lib/syslinux/isohdpfx.bin ]] ; then
+          isohybrid=/usr/lib/syslinux/isohdpfx.bin
+       elif [[ -f /usr/lib/ISOLINUX/isohdpfx.bin ]] ; then
+          #isohybrid_opt="-isohybrid-mbr "
+          isohybrid=/usr/lib/ISOLINUX/isohdpfx.bin
+		else
+		  echo "Can't create isohybrid.  File: isohdpfx.bin not found. The resulting image will be a standard iso file."
+		fi
+	}
+
+	xorriso -as mkisofs -r -J -joliet-long -l \
 		-isohybrid-mbr $isohybrid \
+		-o $R/dist/customiso.iso "$workdir/binary" \
 		-partition_offset 16 \
-		-A "${os} Live - ${arch}" \
+		-V "${blend_distribution} Live - ${flavor}" \
 		-b isolinux/isolinux.bin \
 		-c isolinux/boot.cat \
 		-no-emul-boot \
 		-boot-load-size 4 \
 		-boot-info-table \
-		${=uefi_opt} \
-		-o customiso.iso \
-		binary || zerr
+		-eltorito-alt-boot -e boot/grub/efiboot.img -isohybrid-gpt-basdat -no-emul-boot
 
-		mv ./customiso.iso $R/dist/$image_name.iso 
+	mv $R/dist/customiso.iso $R/dist/$image_name.iso
 	
+	pushd $R/dist
+	md5sum $image_name.iso > $image_name.iso.md5
 	popd
-	unset uefi_opt
 
 	[[ "$DEBUG" = 1 ]] || {
-		[[ -n "$workdir" ]] && sudo rm -rf "$workdir"
+		[[ -n "$workdir" ]] && rm -rf "$workdir"
 	}
 }
 
 iso_genisoimage_build() {
-	fn iso_xorriso_build
+	fn iso_genisoimage_build
 	req=(workdir earch blendlib version release release_name)
 	ckreq || return 1
 
@@ -219,8 +252,6 @@ iso_genisoimage_build() {
 	release_label=$release
 	# image_name="${blend_distribution}-${version}-${release_label}_${date_stamp}-${label}_${earch}"
 	image_name="${blend_distribution}-${version}-${release_name}_${date_stamp}-${label}_${earch}"
-	
-	isohybrid="$R"/extra/syslinux/isohdpfx.bin
 
 	mkdir -p $R/dist
 	pushd $workdir
@@ -247,7 +278,9 @@ iso_genisoimage_build() {
 
 	mv $R/dist/customiso.iso $R/dist/$image_name.iso 
 	isohybrid $R/dist/$image_name.iso
-	md5sum $R/dist/$image_name.iso > $R/dist/$image_name.iso.md5
+	pushd $R/dist
+	md5sum $image_name.iso > $image_name.iso.md5
+	popd
 
 	[[ "$DEBUG" = 1 ]] || {
 		[[ -n "$workdir" ]] && rm -rf "$workdir"
@@ -392,5 +425,21 @@ EOF
 	
 	popd
 	unset tempdir efi_dir arch_efi boot_efi
-	
 }
+
+iso_set_variables() {
+	fn iso_set_variables
+	req=(workdir blend)
+	ckreq || return 1
+	
+	blend=${blendlib##*/}
+	blend_distribution=${blend%%-*}
+	label=`echo "${blend_distribution}" | sed 's/^./\u&/'`
+	
+	find $workdir/binary -name "*.cfg" -print | xargs sed -i "s/@MENU_TITLE@/${label} Live (${release}) - ${flavor}/g"
+	find $workdir/binary -name "*.cfg" -print | xargs sed -i "s/@DISTRO@/${label}/g"	
+	find $workdir/binary -name "*.cfg" -print | xargs sed -i "s/@COMPONENTS@/live components username=${blend_distribution} localhost=${blend_distribution} nocomponents=passwd splash quiet/g"
+	find $workdir/binary -name "*.cfg" -print | xargs sed -i "s/@ABINAME@/${abiname}/g"
+	find $workdir/binary -name "*.cfg" -print | xargs sed -i "s/@FLAVOR@/${flavor}/g"
+}
+

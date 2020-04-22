@@ -17,17 +17,18 @@
 # You should have received a copy of the GNU General Public License
 # along with this source code. If not, see <http://www.gnu.org/licenses/>.
 
-vars+=(bootstrap_tgz_stage3 bootstrap_tgz_stage4 TAR_STAGE4)
 arrs+=(base_packages_option core_packages_option extra_packages_option)
 arrs+=(purge_packages_option)
 arrs+=(core_packages base_packages extra_packages purge_packages)
 
 bootstrap_complete_base() {
 	fn bootstrap_complete_base "$@"
-	req=(arch)
+	req=(workdir strapdir os arch release)
 	ckreq || return 1
 
 	notice "bootstrapping $os $arch base"
+	
+	mkdir -p $strapdir	
 
 	export LANG=C
 	export LC_ALL=C
@@ -56,6 +57,7 @@ bootstrap_complete_base() {
 
 	sudo DEBOOTSTRAP_DIR="$LIBPATH/extra/debootstrap" "$LIBPATH/extra/debootstrap/debootstrap" \
 		--keyring="$LIBPATH/extra/devuan-keyring/keyrings/devuan-archive-keyring.gpg" \
+		--include=wget,ca-certificates \
 		--foreign \
 		--arch $arch $release $strapdir $mirror || zerr
 
@@ -69,8 +71,6 @@ bootstrap_complete_base() {
 	sudo chroot $strapdir \
 		/debootstrap/debootstrap --second-stage || zerr
 
-	blend_bootstrap_setup || zerr
-
 	## write all system configuration
 	notice "writing system configuration"
 	conf_print_debconf     | sudo tee $strapdir/debconf.set              >/dev/null
@@ -81,61 +81,110 @@ bootstrap_complete_base() {
 	conf_print_resolvconf  | sudo tee $strapdir/etc/resolv.conf          >/dev/null
 	conf_print_sourceslist | sudo tee $strapdir/etc/apt/sources.list     >/dev/null
 	#conf_print_locales     | sudo tee $strapdir/etc/profile.d/locales.sh >/dev/null
+}
 
-	## write third-stage for chroot
-	bootstrap_config_thirdstage | sudo tee $strapdir/thirdstage >/dev/null
+bootstrap_setup_base() {
+	fn bootstrap_setup_base "$@"
+	local target="$1"
+	req=(workdir strapdir os arch release)
+	ckreq || return 1
+	
+	notice "Installing gnupg-keys and locales"
+	
+	find $R/extra/gnupg-keys -type f -name "*.asc" -exec cp {} $strapdir/home \;
+	
+	echo \
+"
+deb http://${url}${root} ${release} main
+deb-src http://${url}${root} ${release} main
 
-	## chroot into it and configure further
-	## debootstrap stage 3
-	notice "running debootstrap stage 3"
+deb http://${url}${root} ${release}-updates main
+deb-src http://${url}${root} ${release}-updates main
 
+deb http://${url}${root} ${release}-security main
+deb-src http://${url}${root} ${release}-security main" > $strapdir/etc/apt/sources.list
 
-	chroot-script -d thirdstage || zerr
-
-	[[ $APT_CACHE = 1 ]] && {
-		notice "adding apt cache gpg pubkey"
-		cat <<EOF | sudo tee ${strapdir}/addcachepubkey >/dev/null
-#!/bin/sh
-gpgkey="$(gpg --export -a $aptcachegpg)"
-printf "%s" "\$gpgkey" | apt-key add -
+	cat << EOF | sudo tee $target/setup_locales >/dev/null
+#!/bin/sh	
+## setup locales
+apt-key add /home/*.asc
+rm -f /home/*.asc
+apt-get update
+apt-get --yes --force-yes install locales
+sed -e 's/# en_US.UTF-8/en_US.UTF-8/' -i /etc/locale.gen
+locale-gen en_US.UTF-8
+update-locale LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8 LANGUAGE=en_US.UTF-8 LC_CTYPE=en_US.UTF-8
+apt-get clean
 EOF
-		chroot-script addcachepubkey || zerr
-	}
 
-	if [[ -n "$TAR_STAGE4" ]]; then
-		bootstrap_tar_pack   "$bootstrap_tgz_stage3"             || zerr
-		bootstrap_tar_unpack "$bootstrap_tgz_stage4" "$strapdir" || zerr
-	else
-		bootstrap_tar_pack   "$bootstrap_tgz_stage3"             || zerr
-		bootstrap_tar_unpack "$bootstrap_tgz_stage3" "$strapdir" || zerr
-	fi
+	chroot-script -d setup_locales $target || zerr
 }
 
 bootstrap_config_thirdstage() {
 	fn bootstrap_config_thirdstage
-	req=(core_packages base_packages)
+	req=(R os strapdir arch release core_packages base_packages extra_packages)
 	ckreq || return 1
 
-	cat << EOF
+	cat << EOF | sudo tee $strapdir/thirdstage >/dev/null
 #!/bin/sh
+## check if all our core,base and extra packages exist
+
 apt-get update
-debconf-set-selections /debconf.set
+allpkgs="\$(apt-cache search '.' | cut -d' ' -f1)"
 
-echo "${rootcredentials}" | chpasswd
-sed -i -e 's/KERNEL\!=\"eth\*|/KERNEL\!=\"/' \
-	/lib/udev/rules.d/75-persistent-net-generator.rules
-rm -f /etc/udev/rules.d/70-persistent-net.rules
-export DEBIAN_FRONTEND=noninteractive
+for i in ${core_packages} ; do
+	printf "%s" "\$allpkgs" | grep -q "^\$i$" || {
+		case "\$i" in
+			--*) continue ;;
+			*)   missing="\$missing \$i" ;;
+		esac
+	}
+done
 
-apt-get --yes --force-yes install ${core_packages_option} ${core_packages}
-apt-get --yes --force-yes install ${base_packages_option} ${base_packages}
-apt-get --yes --force-yes purge  ${purge_packages_option} ${purge_packages}
+[ -n "\$missing" ] && {
+	printf "\033[1;31m[!!] some core packages don't exist\033[0m\n"
+	printf "%s\n" "\$missing"
+	exit 1
+}
+
+for i in ${base_packages} ; do
+	printf "%s" "\$allpkgs" | grep -q "^\$i$" || {
+		case "\$i" in
+			--*) continue ;;
+			*)   missing="\$missing \$i" ;;
+		esac
+	}
+done
+
+[ -n "\$missing" ] && {
+	printf "\033[1;31m[!!] some base packages don't exist\033[0m\n"
+	printf "%s\n" "\$missing"
+	exit 1
+}
+
+for i in ${extra_packages} ; do
+	printf "%s" "\$allpkgs" | grep -q "^\$i$" || {
+		case "\$i" in
+			--*) continue ;;
+			*)   missing="\$missing \$i" ;;
+		esac
+	}
+done
+
+[ -n "\$missing" ] && {
+	printf "\033[1;31m[!!] some extra packages don't exist\033[0m\n"
+	printf "%s\n" "\$missing"
+	exit 1
+}
+
+dpkg --configure -a
+
+apt-get --yes --force-yes install ${core_packages}
+apt-get --yes --force-yes install ${base_packages}
+apt-get --yes --force-yes install ${extra_packages}
+[[ ${#purge_packages[*]} != 0 ]] && apt-get --yes --force-yes purge ${purge_packages}
 apt-get --yes --force-yes autoremove
-
 apt-get clean
-
-sed -e 's/# en_US.UTF-8/en_US.UTF-8/' -i /etc/locale.gen
-locale-gen
 
 rm -f /debconf.set
 rm -f /etc/ssh/ssh_host_*
@@ -144,10 +193,82 @@ rm -f /root/.bash_history
 EOF
 }
 
+bootstrap_thirdstage() {
+	fn bootstrap_thirdstage
+	req=(R os strapdir arch release)
+	
+	## write third-stage for chroot
+	bootstrap_config_thirdstage | sudo tee $strapdir/thirdstage >/dev/null
+
+	## chroot into it and configure further
+	## debootstrap stage 3
+	notice "running debootstrap stage 3"
+
+	chroot-script -d thirdstage || zerr
+
+	#if [[ -n "$TAR_STAGE4" ]]; then
+	#	bootstrap_tar_pack   "$bootstrap_tgz_stage3"             || zerr
+	#	bootstrap_tar_unpack "$bootstrap_tgz_stage4" "$strapdir" || zerr
+	#else
+	#	bootstrap_tar_pack   "$bootstrap_tgz_stage3"             || zerr
+	#	bootstrap_tar_unpack "$bootstrap_tgz_stage3" "$strapdir" || zerr
+	#fi
+}	
+
+bootstrap_backup() {
+	fn bootstrap_backup "$@"
+	local squashfs_backup="$1"
+	req=(R os strapdir arch release squashfs_backup)
+	
+	notice "Creating $squashfs_backup in $workdir/squashfs"
+	silly
+
+	case "$arch" in
+		amd64|i386)
+			_compfilt="-Xbcj x86"
+			;;
+		arm*)
+			_compfilt="-Xbcj arm"
+			;;
+		*)
+			_compfilt=""
+			;;
+	esac
+	
+	pushd $workdir
+	mkdir -p squashfs
+	silly
+	[[ -f squashfs/filesystem.squashfs ]] && rm -f squashfs/$squashfs_backup
+	sudo mksquashfs $strapdir squashfs/$squashfs_backup \
+		-comp xz ${=_compfilt} -noappend || zerr
+	popd
+	
+	ckreq || return 1
+}
+
+bootstrap_restore() {
+	fn bootstrap_restore "$@"
+	local squashfs_backup="$1"
+	target="$2"
+	req=(R os strapdir arch release squashfs_backups)
+	
+	notice "Restoring $squashfs_backup in $workdir/$target"
+	
+	pushd $workdir
+	mkdir -p mnt
+	mount -t squashfs -o loop squashfs/$squashfs_backup mnt/
+	rsync -v -rlt -a mnt/ $target/
+	umount mnt/
+	rm -rf mnt
+	popd	
+	
+	ckreq || return 1
+}
+
 bootstrap_tar_pack() {
-	fn bootstrap_tar_pack
+	fn bootstrap_tar_pack "$@"
+	local bootstrap_tgz="$1"
 	req=(bootstrap_tgz)
-	bootstrap_tgz="$1"
 	ckreq || return 1
 
 	local _dest="$(dirname $bootstrap_tgz)"
